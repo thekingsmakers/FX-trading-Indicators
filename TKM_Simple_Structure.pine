@@ -1,0 +1,123 @@
+//@version=6
+indicator("TKM Simple Structure", shorttitle="TKM Structure", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// Swing highs/lows, BOS / CHoCH, and a trend line with arrows.
+// Everything is decided at bar close and never repaints. A swing is confirmed
+// "len" bars after it forms, so labels appear len bars late by design.
+
+int len = input.int(5, "Swing length (bars on each side)", minval=2, group="Structure")
+bool showSwings = input.bool(true, "Swing labels (HH / LH / HL / LL)", group="Display")
+bool showBreaks = input.bool(true, "BOS / CHoCH lines", group="Display")
+bool showTrend = input.bool(true, "Trend line with arrows", group="Display")
+bool showArrows = input.bool(true, "Break arrows on chart", group="Display")
+bool colorBars = input.bool(false, "Color candles by trend", group="Display")
+color bull = input.color(color.rgb(0, 170, 120), "Bullish", group="Colors")
+color bear = input.color(color.rgb(230, 60, 70), "Bearish", group="Colors")
+
+float ph = ta.pivothigh(high, len, len)
+float pl = ta.pivotlow(low, len, len)
+
+// Latest confirmed swings (also the break levels)
+var float swHigh = na
+var float swLow = na
+var int swHighBar = na
+var int swLowBar = na
+var bool highCrossed = false
+var bool lowCrossed = false
+var int trend = 0
+
+// Trend line (zigzag) state
+var int zzType = 0
+var float zzPrice = na
+var int zzBar = na
+var line zzLine = na
+
+bool bosUp = false
+bool bosDown = false
+bool chochUp = false
+bool chochDown = false
+
+if barstate.isconfirmed
+    if not na(ph)
+        int b = bar_index - len
+        string t = na(swHigh) ? "H" : ph > swHigh ? "HH" : ph < swHigh ? "LH" : "EQH"
+        color c = na(swHigh) ? color.gray : ph > swHigh ? bull : bear
+        if showSwings
+            label.new(b, ph, t, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(c, 85), textcolor=c, size=size.small)
+        swHigh := ph
+        swHighBar := b
+        highCrossed := false
+        if showTrend
+            if zzType == 0
+                zzType := 1
+                zzPrice := ph
+                zzBar := b
+            else if zzType == 1
+                if ph > zzPrice
+                    if not na(zzLine)
+                        line.set_xy2(zzLine, b, ph)
+                    zzPrice := ph
+                    zzBar := b
+            else
+                zzLine := line.new(zzBar, zzPrice, b, ph, xloc=xloc.bar_index, color=bull, width=2, style=line.style_arrow_right)
+                zzType := 1
+                zzPrice := ph
+                zzBar := b
+    if not na(pl)
+        int b = bar_index - len
+        string t = na(swLow) ? "L" : pl > swLow ? "HL" : pl < swLow ? "LL" : "EQL"
+        color c = na(swLow) ? color.gray : pl > swLow ? bull : bear
+        if showSwings
+            label.new(b, pl, t, xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=color.new(c, 85), textcolor=c, size=size.small)
+        swLow := pl
+        swLowBar := b
+        lowCrossed := false
+        if showTrend
+            if zzType == 0
+                zzType := -1
+                zzPrice := pl
+                zzBar := b
+            else if zzType == -1
+                if pl < zzPrice
+                    if not na(zzLine)
+                        line.set_xy2(zzLine, b, pl)
+                    zzPrice := pl
+                    zzBar := b
+            else
+                zzLine := line.new(zzBar, zzPrice, b, pl, xloc=xloc.bar_index, color=bear, width=2, style=line.style_arrow_right)
+                zzType := -1
+                zzPrice := pl
+                zzBar := b
+
+    // Structure breaks: a candle must CLOSE beyond the swing.
+    // Break in the trend direction = BOS. Break against it = CHoCH.
+    bool upBreak = not na(swHigh) and not highCrossed and close > swHigh
+    bool downBreak = not na(swLow) and not lowCrossed and close < swLow
+    if upBreak
+        chochUp := trend == -1
+        bosUp := trend != -1
+        if showBreaks
+            line.new(swHighBar, swHigh, bar_index, swHigh, xloc=xloc.bar_index, color=bull, style=line.style_dashed)
+            label.new(int(math.floor((swHighBar + bar_index) / 2.0)), swHigh, chochUp ? "CHoCH" : "BOS", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=color.new(bull, 85), textcolor=bull, size=size.small)
+        highCrossed := true
+        trend := 1
+    if downBreak
+        chochDown := trend == 1
+        bosDown := trend != 1
+        if showBreaks
+            line.new(swLowBar, swLow, bar_index, swLow, xloc=xloc.bar_index, color=bear, style=line.style_dashed)
+            label.new(int(math.floor((swLowBar + bar_index) / 2.0)), swLow, chochDown ? "CHoCH" : "BOS", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up, color=color.new(bear, 85), textcolor=bear, size=size.small)
+        lowCrossed := true
+        trend := -1
+
+plotshape(showArrows and chochUp, "Bullish CHoCH", shape.arrowup, location.belowbar, bull, size=size.normal, text="CHoCH")
+plotshape(showArrows and chochDown, "Bearish CHoCH", shape.arrowdown, location.abovebar, bear, size=size.normal, text="CHoCH")
+plotshape(showArrows and bosUp, "Bullish BOS", shape.triangleup, location.belowbar, bull, size=size.tiny, text="BOS")
+plotshape(showArrows and bosDown, "Bearish BOS", shape.triangledown, location.abovebar, bear, size=size.tiny, text="BOS")
+barcolor(colorBars ? (trend == 1 ? bull : trend == -1 ? bear : na) : na)
+plot(trend, "Trend: +1 bullish / -1 bearish", display=display.data_window)
+
+alertcondition(bosUp, "Bullish BOS", "TKM: Bullish BOS on {{ticker}} {{interval}}")
+alertcondition(bosDown, "Bearish BOS", "TKM: Bearish BOS on {{ticker}} {{interval}}")
+alertcondition(chochUp, "Bullish CHoCH", "TKM: Bullish CHoCH on {{ticker}} {{interval}}")
+alertcondition(chochDown, "Bearish CHoCH", "TKM: Bearish CHoCH on {{ticker}} {{interval}}")
