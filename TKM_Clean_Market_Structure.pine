@@ -1,0 +1,171 @@
+//@version=6
+indicator("TKM Clean Market Structure v2", overlay = true, max_lines_count = 300, max_labels_count = 300)
+
+int strength = input.int(3, "Swing strength", minval = 1, maxval = 100, tooltip = "Closed candles required on each side. Every confirmed pivot is accepted independently; smaller values show more swings.")
+int swingHistory = input.int(16, "Previous swing lines to retain", minval = 0, maxval = 60)
+int history = input.int(40, "BOS / MS events to retain", minval = 1, maxval = 200)
+bool showTrend = input.bool(true, "Show trend direction line")
+int trendFade = input.int(65, "Trend arrow transparency", minval = 0, maxval = 90, tooltip = "Higher values make the trend arrow lighter.")
+bool showAudit = input.bool(false, "Show historical rule checks")
+int trendLength = input.int(50, "Trend lookback (bars)", minval = 10, maxval = 300)
+int projection = input.int(8, "Trend projection (bars)", minval = 0, maxval = 50, tooltip = "Extends the recent fitted slope. This is a visual guide, not a price forecast.")
+color bull = input.color(color.teal, "Bullish color")
+color bear = input.color(color.red, "Bearish color")
+
+float ph = ta.pivothigh(high, strength, strength)
+float pl = ta.pivotlow(low, strength, strength)
+float trendStart = ta.linreg(close, trendLength, trendLength - 1)
+float trendEnd = ta.linreg(close, trendLength, 0)
+float windowHigh = ta.highest(high, strength * 2 + 1)
+float windowLow = ta.lowest(low, strength * 2 + 1)
+
+var float hi = na
+var float lo = na
+var float priorHi = na
+var float priorLo = na
+var int hiTime = na
+var int loTime = na
+var int bias = 0
+var bool hiBroken = false
+var bool loBroken = false
+var string hiName = "SH"
+var string loName = "SL"
+var line hiLine = na
+var line loLine = na
+var label hiText = na
+var label loText = na
+var array<line> eventLines = array.new<line>()
+var array<label> eventTexts = array.new<label>()
+var array<line> oldSwingLines = array.new<line>()
+var array<label> oldSwingTexts = array.new<label>()
+var int checkedBars = 0
+var int highCount = 0
+var int lowCount = 0
+var int bosCount = 0
+var int msCount = 0
+var int ruleErrors = 0
+var int lastHighBreak = na
+var int lastLowBreak = na
+var int firstChecked = na
+
+archiveSwing(line level, label caption, color shade) =>
+    if not na(level)
+        int origin = line.get_x1(level)
+        int endTime = origin + int(nz(timeframe.in_seconds(), 60) * 2000)
+        line.set_x2(level, endTime)
+        line.set_color(level, color.new(shade, 45))
+        label.set_x(caption, int(origin + (endTime - origin) / 2))
+        array.push(oldSwingLines, level)
+        array.push(oldSwingTexts, caption)
+        if array.size(oldSwingLines) > swingHistory
+            line.delete(array.shift(oldSwingLines))
+            label.delete(array.shift(oldSwingTexts))
+
+event(int origin, float price, string caption, color shade) =>
+    array.push(eventLines, line.new(origin, price, time, price, xloc = xloc.bar_time, color = shade, style = line.style_dashed))
+    array.push(eventTexts, label.new(int(origin + (time - origin) / 2), price, caption, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(shade, 100), textcolor = shade, size = size.small))
+    if array.size(eventLines) > history
+        line.delete(array.shift(eventLines))
+        label.delete(array.shift(eventTexts))
+
+bool upBOS = false
+bool downBOS = false
+bool upMS = false
+bool downMS = false
+
+if barstate.isconfirmed
+    checkedBars += 1
+    if na(firstChecked)
+        firstChecked := time
+    // Check existing levels first: a new pivot cannot erase a break on this bar.
+    if not na(hi) and not hiBroken and close > hi
+        upMS := bias == -1
+        upBOS := not upMS
+        ruleErrors += not na(lastHighBreak) and hiTime == lastHighBreak ? 1 : 0
+        lastHighBreak := hiTime
+        event(hiTime, hi, upMS ? "MS ↑" : "BOS ↑", bull)
+        hiBroken := true
+        bias := 1
+        archiveSwing(hiLine, hiText, bear)
+        hiLine := na
+        hiText := na
+    else if not na(lo) and not loBroken and close < lo
+        downMS := bias == 1
+        downBOS := not downMS
+        ruleErrors += not na(lastLowBreak) and loTime == lastLowBreak ? 1 : 0
+        lastLowBreak := loTime
+        event(loTime, lo, downMS ? "MS ↓" : "BOS ↓", bear)
+        loBroken := true
+        bias := -1
+        archiveSwing(loLine, loText, bull)
+        loLine := na
+        loText := na
+
+    // Independent detection also preserves both pivots on an outside candle.
+    bool acceptHi = not na(ph)
+    bool acceptLo = not na(pl)
+
+    if acceptHi
+        highCount += 1
+        ruleErrors += ph != windowHigh ? 1 : 0
+        archiveSwing(hiLine, hiText, bear)
+        priorHi := hi
+        hi := ph
+        hiTime := time[strength]
+        hiName := na(priorHi) ? "SH" : hi > priorHi ? "HH" : hi < priorHi ? "LH" : "EQH"
+        hiBroken := false
+        hiLine := line.new(hiTime, hi, time, hi, xloc = xloc.bar_time, color = bear)
+        hiText := label.new(time, hi, hiName, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(bear, 100), textcolor = bear, size = size.small)
+
+    if acceptLo
+        lowCount += 1
+        ruleErrors += pl != windowLow ? 1 : 0
+        archiveSwing(loLine, loText, bull)
+        priorLo := lo
+        lo := pl
+        loTime := time[strength]
+        loName := na(priorLo) ? "SL" : lo > priorLo ? "HL" : lo < priorLo ? "LL" : "EQL"
+        loBroken := false
+        loLine := line.new(loTime, lo, time, lo, xloc = xloc.bar_time, color = bull)
+        loText := label.new(time, lo, loName, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(bull, 100), textcolor = bull, size = size.small)
+    bosCount += upBOS or downBOS ? 1 : 0
+    msCount += upMS or downMS ? 1 : 0
+
+// Only the latest unbroken high and low remain as solid lines.
+if not na(hiLine)
+    line.set_x2(hiLine, time)
+    label.set_x(hiText, int(hiTime + (time - hiTime) / 2))
+if not na(loLine)
+    line.set_x2(loLine, time)
+    label.set_x(loText, int(loTime + (time - loTime) / 2))
+
+var table status = table.new(position.top_right, 1, 5)
+var line directionLine = na
+var label directionText = na
+if barstate.islast
+    // Use only closed candles, including while the live candle is forming.
+    int shift = barstate.isconfirmed ? 0 : 1
+    float first = trendStart[shift]
+    float last = trendEnd[shift]
+    float slope = (last - first) / (trendLength - 1)
+    color trendColor = color.new(slope > 0 ? bull : slope < 0 ? bear : color.gray, trendFade)
+    line.delete(directionLine)
+    label.delete(directionText)
+    if showTrend and not na(first) and not na(last)
+        int endBar = bar_index - shift
+        float projected = last + slope * projection
+        directionLine := line.new(endBar - trendLength + 1, first, endBar + projection, projected, xloc = xloc.bar_index, color = trendColor, width = 3, style = line.style_arrow_right)
+        directionText := label.new(endBar + projection, projected, slope > 0 ? "RISING TREND" : slope < 0 ? "FALLING TREND" : "FLAT TREND", style = label.style_label_down, color = color.new(trendColor, 100), textcolor = trendColor, size = size.small)
+    string structure = bias == 1 ? "Bullish" : bias == -1 ? "Bearish" : "Waiting for break"
+    string trend = na(slope) ? "Warming up" : slope > 0 ? "Rising" : slope < 0 ? "Falling" : "Flat"
+    table.cell(status, 0, 0, "Structure: " + structure + " | Trend: " + trend, text_color = bias == 1 ? bull : bias == -1 ? bear : color.gray, bgcolor = color.new(chart.bg_color, 10), text_size = size.small)
+    if showAudit
+        table.cell(status, 0, 1, "Closed bars checked: " + str.tostring(checkedBars), text_color = chart.fg_color, bgcolor = chart.bg_color)
+        table.cell(status, 0, 2, "Highs: " + str.tostring(highCount) + " | Lows: " + str.tostring(lowCount), text_color = chart.fg_color, bgcolor = chart.bg_color)
+        table.cell(status, 0, 3, "BOS: " + str.tostring(bosCount) + " | MS: " + str.tostring(msCount) + " | Rule errors: " + str.tostring(ruleErrors), text_color = ruleErrors == 0 ? bull : bear, bgcolor = chart.bg_color)
+        table.cell(status, 0, 4, "From " + str.format_time(firstChecked, "yyyy-MM-dd", "UTC") + " | Strength " + str.tostring(strength), text_color = chart.fg_color, bgcolor = chart.bg_color)
+
+alertcondition(upBOS, "Bullish BOS", "Bullish BOS on {{ticker}} {{interval}}")
+alertcondition(downBOS, "Bearish BOS", "Bearish BOS on {{ticker}} {{interval}}")
+alertcondition(upMS, "Bullish MS", "Bullish MS on {{ticker}} {{interval}}")
+alertcondition(downMS, "Bearish MS", "Bearish MS on {{ticker}} {{interval}}")
